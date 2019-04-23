@@ -40,80 +40,83 @@ Resources:
                 UTF8CHARSET = 'UTF-8';
 
               exports.handler = (event, context, callback) => {
-                  event.Records.forEach((record) => {
-                      if(record.eventName != 'INSERT') {
-                        console.log('Skip update');
-                        return 'Skip';
-                      }
-                      const item = record.dynamodb.NewImage;
-                      const recipient = item.recipient.S;
-                      const message = item.message.S;
-                      const destination = {
-                          ToAddresses: [recipient]
-                      };
-                      const body = { Text: { Charset: UTF8CHARSET, Data: message } };
-                      const emailParams = {
-                          Destination: destination,
-                          Message: {
-                              Body: body,
-                              Subject: {
-                                  Charset: UTF8CHARSET,
-                                  Data: "New message"
+                event.Records.forEach((record) => {
+                  if(record.eventName != 'INSERT') {
+                    console.log('Skip update');
+                    callback(null, 'Skip');
+                  } else {
+                    const item = record.dynamodb.NewImage;
+                    const recipient = item.recipient.S;
+                    const message = item.message.S;
+                    const destination = {
+                      ToAddresses: [recipient]
+                    };
+                    const body = { Text: { Charset: UTF8CHARSET, Data: message } };
+                    const emailParams = {
+                      Destination: destination,
+                      Message: {
+                        Body: body,
+                        Subject: {
+                          Charset: UTF8CHARSET,
+                          Data: "New message"
+                        }
+                      },
+                      Source: 'robot@wiseman.ru'
+                    };
+                    SES.sendEmail(emailParams).promise()
+                        .then(() => {
+                          const params = {
+                            TableName: '${Name}',
+                            Key: {
+                              id: {
+                                S: item.id.S
                               }
-                          },
-                          Source: 'robot@wiseman.ru'
-                      };
-                      SES.sendEmail(emailParams).promise()
-                          .then(() => {
-                            const params = {
-                              TableName: '${Name}',
-                              Key: {
-                                id: {
-                                  S: item.id.S
-                                }
-                              },
-                              UpdateExpression: 'SET #status = :ok',
-                              ExpressionAttributeNames: {
-                                '#status': 'status'
-                              },
-                              ExpressionAttributeValues: {
-                                ':ok': {
-                                  S: 'OK'
-                                }
+                            },
+                            UpdateExpression: 'SET #status = :ok',
+                            ExpressionAttributeNames: {
+                              '#status': 'status'
+                            },
+                            ExpressionAttributeValues: {
+                              ':ok': {
+                                S: 'OK'
                               }
-                            };
-                            return DB.updateItem(params).promise();
-                          })
-                          .then(() => {
-                            console.log('Email sent to:', recipient);
-                            callback(null, 'Success');
-                          })
-                          .catch(err => {
-                              console.error(err, err.stack);
-                              callback('Error:' + err);
-                          });
-                  });
+                            }
+                          };
+                          return DB.updateItem(params).promise();
+                        })
+                        .then(() => {
+                          console.log('Email sent to:', recipient);
+                          callback(null, 'Success');
+                        })
+                        .catch(err => {
+                          console.error(err, err.stack);
+                          callback('Error:' + err);
+                        });
+                  }
+                });
               };
           -
             Name: !Ref Messages
 
-  EventSourceMapping: 
+  EventSourceMapping:
     Type: "AWS::Lambda::EventSourceMapping"
-    Properties: 
+    Properties:
       EventSourceArn: !GetAtt Messages.StreamArn
       FunctionName: !GetAtt SendMessageLambda.Arn
       StartingPosition: LATEST
     DependsOn:
       - StreamPolicy
 
-  Account: 
+  Account:
     Type: AWS::ApiGateway::Account
-    Properties: 
+    Properties:
       CloudWatchRoleArn: !GetAtt ApiGatewayRole.Arn
+    DependsOn:
+      - ApiGatewayLoggingPolicy
 
   MessagesApi:
     Type: "AWS::ApiGateway::RestApi"
-    Properties: 
+    Properties:
       Name: messages-api
 
   MessagesResource:
@@ -152,7 +155,7 @@ Resources:
         RequestTemplates:
           application/json: !Sub
             - >-
-                { 
+                {
                   "TableName": "${Name}",
                   "Item": {
                     "id": {
@@ -195,12 +198,12 @@ Resources:
         RequestTemplates:
           application/json: !Sub
             - >-
-                { 
+                {
                   "TableName": "${Name}",
-                  "FilterExpression": "#r = :id", 
+                  "FilterExpression": "#r = :id",
                   "ExpressionAttributeNames": {
                     "#r": "recipient"
-                  }, 
+                  },
                   "ExpressionAttributeValues": {
                     ":id": {
                       "S": "$util.urlDecode($input.params('recipient'))"}
@@ -220,10 +223,16 @@ Resources:
     Type: "AWS::ApiGateway::Deployment"
     Properties:
       RestApiId: !Ref MessagesApi
-      StageName: testing
     DependsOn:
       - PostMessagesMethod
       - GetMessagesMethod
+
+  TestingStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      StageName: testing
+      RestApiId: !Ref MessagesApi
+      DeploymentId: !Ref MessagesDeploy
 
   SendMessageLambdaRole:
     Type: "AWS::IAM::Role"
@@ -261,13 +270,13 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: 
+            Action:
               - "dynamodb:PutItem"
               - "dynamodb:Scan"
             Resource: !GetAtt Messages.Arn
       Roles:
-        - 
-          Ref: ApiGatewayRole    
+        -
+          Ref: ApiGatewayRole
 
   UpdateDataPolicy:
     Type: "AWS::IAM::Policy"
@@ -277,12 +286,12 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: 
+            Action:
               - "dynamodb:UpdateItem"
             Resource: !GetAtt Messages.Arn
       Roles:
-        - 
-          Ref: SendMessageLambdaRole    
+        -
+          Ref: SendMessageLambdaRole
 
   LambdaLoggingPolicy:
     Type: "AWS::IAM::Policy"
@@ -295,15 +304,15 @@ Resources:
             Action: "logs:CreateLogGroup"
             Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - Effect: Allow
-            Action: 
+            Action:
               - "logs:CreateLogStream"
               - "logs:PutLogEvents"
-            Resource: !Sub 
+            Resource: !Sub
               - "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${Name}:*"
               -
                 Name: !Ref SendMessageLambda
       Roles:
-        - 
+        -
           Ref: SendMessageLambdaRole
 
   ApiGatewayLoggingPolicy:
@@ -314,7 +323,7 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: 
+            Action:
               - "logs:CreateLogGroup"
               - "logs:PutLogEvents"
               - "logs:CreateLogStream"
@@ -336,14 +345,14 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: 
+            Action:
               - "dynamodb:GetRecords"
               - "dynamodb:GetShardIterator"
               - "dynamodb:DescribeStream"
               - "dynamodb:ListStreams"
             Resource: !GetAtt Messages.StreamArn
       Roles:
-        - 
+        -
           Ref: SendMessageLambdaRole
 
   SendEmailPolicy:
@@ -354,9 +363,14 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: 
+            Action:
               - "ses:SendEmail"
             Resource: "*"
       Roles:
-        - 
+        -
           Ref: SendMessageLambdaRole
+
+Outputs:
+  ApiUrl:
+    Description: URL of endpoint
+    Value: !Sub "https://${MessagesApi}.execute-api.${AWS::Region}.amazonaws.com/${TestingStage}/messages/"
