@@ -6,6 +6,357 @@ Mappings: {}
 
 Parameters: {}
 
-Resources: {}
+Resources:
+  Messages:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      AttributeDefinitions:
+        -
+          AttributeName: id
+          AttributeType: S
+      KeySchema:
+        -
+          AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
 
-Outputs: {}
+  SendMessageLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt SendMessageLambdaRole.Arn
+      Runtime: nodejs8.10
+      Code:
+        ZipFile: !Sub
+          - >-
+              const AWS = require('aws-sdk'),
+                SES = new AWS.SES(),
+                DB = new AWS.DynamoDB(),
+                UTF8CHARSET = 'UTF-8';
+
+              exports.handler = (event, context, callback) => {
+                  event.Records.forEach((record) => {
+                      if(record.eventName != 'INSERT') {
+                        console.log('Skip update');
+                        return 'Skip';
+                      }
+                      const item = record.dynamodb.NewImage;
+                      const recipient = item.recipient.S;
+                      const message = item.message.S;
+                      const destination = {
+                          ToAddresses: [recipient]
+                      };
+                      const body = { Text: { Charset: UTF8CHARSET, Data: message } };
+                      const emailParams = {
+                          Destination: destination,
+                          Message: {
+                              Body: body,
+                              Subject: {
+                                  Charset: UTF8CHARSET,
+                                  Data: "New message"
+                              }
+                          },
+                          Source: 'robot@wiseman.ru'
+                      };
+                      SES.sendEmail(emailParams).promise()
+                          .then(() => {
+                            const params = {
+                              TableName: '${Name}',
+                              Key: {
+                                id: {
+                                  S: item.id.S
+                                }
+                              },
+                              UpdateExpression: 'SET #status = :ok',
+                              ExpressionAttributeNames: {
+                                '#status': 'status'
+                              },
+                              ExpressionAttributeValues: {
+                                ':ok': {
+                                  S: 'OK'
+                                }
+                              }
+                            };
+                            return DB.updateItem(params).promise();
+                          })
+                          .then(() => {
+                            console.log('Email sent to:', recipient);
+                            callback(null, 'Success');
+                          })
+                          .catch(err => {
+                              console.error(err, err.stack);
+                              callback('Error:' + err);
+                          });
+                  });
+              };
+          -
+            Name: !Ref Messages
+
+  EventSourceMapping: 
+    Type: "AWS::Lambda::EventSourceMapping"
+    Properties: 
+      EventSourceArn: !GetAtt Messages.StreamArn
+      FunctionName: !GetAtt SendMessageLambda.Arn
+      StartingPosition: LATEST
+    DependsOn:
+      - StreamPolicy
+
+  Account: 
+    Type: AWS::ApiGateway::Account
+    Properties: 
+      CloudWatchRoleArn: !GetAtt ApiGatewayRole.Arn
+
+  MessagesApi:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties: 
+      Name: messages-api
+
+  MessagesResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref MessagesApi
+      ParentId: !GetAtt MessagesApi.RootResourceId
+      PathPart: messages
+
+  RecipientResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref MessagesApi
+      ParentId: !Ref MessagesResource
+      PathPart: recipient
+
+  RecipientIdResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref MessagesApi
+      ParentId: !Ref RecipientResource
+      PathPart: "{recipient}"
+
+  PostMessagesMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref MessagesResource
+      RestApiId: !Ref MessagesApi
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem"
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        RequestTemplates:
+          application/json: !Sub
+            - >-
+                { 
+                  "TableName": "${Name}",
+                  "Item": {
+                    "id": {
+                          "S": "$context.requestId"
+                          },
+                      "recipient": {
+                          "S": "$input.path('$.recipient')"
+                          },
+                      "message": {
+                          "S": "$input.path('$.message')"
+                      }
+                  }
+                }
+            -
+              Name: !Ref Messages
+        IntegrationResponses:
+          - ResponseTemplates:
+              application/json: >-
+                {
+                  "status": "OK"
+                }
+            StatusCode: 201
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 201
+
+  GetMessagesMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !Ref RecipientIdResource
+      RestApiId: !Ref MessagesApi
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/Scan"
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        RequestTemplates:
+          application/json: !Sub
+            - >-
+                { 
+                  "TableName": "${Name}",
+                  "FilterExpression": "#r = :id", 
+                  "ExpressionAttributeNames": {
+                    "#r": "recipient"
+                  }, 
+                  "ExpressionAttributeValues": {
+                    ":id": {
+                      "S": "$util.urlDecode($input.params('recipient'))"}
+                    }
+                  }
+                }
+            -
+              Name: !Ref Messages
+        IntegrationResponses:
+          - ResponseTemplates:
+              application/json: $input.json('$')
+            StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+
+  MessagesDeploy:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref MessagesApi
+      StageName: testing
+    DependsOn:
+      - PostMessagesMethod
+      - GetMessagesMethod
+
+  SendMessageLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  ApiGatewayRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  ScanPutDataPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: ScanPutData
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "dynamodb:PutItem"
+              - "dynamodb:Scan"
+            Resource: !GetAtt Messages.Arn
+      Roles:
+        - 
+          Ref: ApiGatewayRole    
+
+  UpdateDataPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: UpdateData
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "dynamodb:UpdateItem"
+            Resource: !GetAtt Messages.Arn
+      Roles:
+        - 
+          Ref: SendMessageLambdaRole    
+
+  LambdaLoggingPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: LambdaLogging
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "logs:CreateLogGroup"
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+          - Effect: Allow
+            Action: 
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: !Sub 
+              - "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${Name}:*"
+              -
+                Name: !Ref SendMessageLambda
+      Roles:
+        - 
+          Ref: SendMessageLambdaRole
+
+  ApiGatewayLoggingPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: ApiGatewayLogging
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "logs:CreateLogGroup"
+              - "logs:PutLogEvents"
+              - "logs:CreateLogStream"
+              - "logs:DescribeLogGroups"
+              - "logs:DescribeLogStreams"
+              - "logs:PutLogEvents"
+              - "logs:GetLogEvents"
+              - "logs:FilterLogEvents"
+            Resource: "*"
+      Roles:
+        -
+          Ref: ApiGatewayRole
+
+  StreamPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: DynamoStream
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "dynamodb:GetRecords"
+              - "dynamodb:GetShardIterator"
+              - "dynamodb:DescribeStream"
+              - "dynamodb:ListStreams"
+            Resource: !GetAtt Messages.StreamArn
+      Roles:
+        - 
+          Ref: SendMessageLambdaRole
+
+  SendEmailPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: SendEmail
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - "ses:SendEmail"
+            Resource: "*"
+      Roles:
+        - 
+          Ref: SendMessageLambdaRole
