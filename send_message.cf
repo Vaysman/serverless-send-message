@@ -1,0 +1,11 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create table, roles and lambda
+Metadata: {}
+
+Mappings: {}
+
+Parameters: {}
+
+Resources: {}
+
+Outputs: {}
