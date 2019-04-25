@@ -147,6 +147,7 @@ Resources:
       HttpMethod: POST
       ResourceId: !Ref MessagesResource
       RestApiId: !Ref MessagesApi
+      ApiKeyRequired: true
       Integration:
         Type: AWS
         IntegrationHttpMethod: POST
@@ -190,6 +191,7 @@ Resources:
       HttpMethod: GET
       ResourceId: !Ref RecipientIdResource
       RestApiId: !Ref MessagesApi
+      ApiKeyRequired: true
       Integration:
         Type: AWS
         IntegrationHttpMethod: POST
@@ -233,6 +235,28 @@ Resources:
       StageName: testing
       RestApiId: !Ref MessagesApi
       DeploymentId: !Ref MessagesDeploy
+
+  TestApiKey:
+    Type: "AWS::ApiGateway::ApiKey"
+    Properties:
+      Name: TestKey
+      Enabled: true
+
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: TestPlan
+      ApiStages:
+        -
+          ApiId: !Ref MessagesApi
+          Stage: !Ref TestingStage
+
+  ApiKeyUsagePlan:
+    Type: "AWS::ApiGateway::UsagePlanKey"
+    Properties:
+      KeyId: !Ref TestApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
 
   SendMessageLambdaRole:
     Type: "AWS::IAM::Role"
