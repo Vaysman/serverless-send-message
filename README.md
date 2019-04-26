@@ -35,7 +35,7 @@ CloudFormation uses to create all necessary part of the application.
 
 1. Verify a new domain in SES
 1. Verify a new email address in SES
-1. Create a new CloudFormation stack using the send_message template
+1. Create a new CloudFormation stack using the ```send_message.cf``` template
    - Put email address form the verified domain as a parameter 
 
 # How to clean up
