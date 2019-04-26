@@ -4,7 +4,11 @@ Metadata: {}
 
 Mappings: {}
 
-Parameters: {}
+Parameters:
+  ServiceEmailAddress:
+    Description: Email address which will be used by the application
+    Type: String
+    Default: 'robot@wiseman.ru'
 
 Resources:
   Messages:
@@ -61,7 +65,7 @@ Resources:
                           Data: "New message"
                         }
                       },
-                      Source: 'robot@wiseman.ru'
+                      Source: '${Email}'
                     };
                     SES.sendEmail(emailParams).promise()
                         .then(() => {
@@ -97,6 +101,7 @@ Resources:
               };
           -
             Name: !Ref Messages
+            Email: !Ref ServiceEmailAddress
 
   EventSourceMapping:
     Type: "AWS::Lambda::EventSourceMapping"
