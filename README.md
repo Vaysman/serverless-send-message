@@ -43,3 +43,25 @@ CloudFormation uses to create all necessary part of the application.
 1. Delete CloudWatch Log Groups
 1. Delete verified email address in SES
 1. Delete verified domain in SES
+
+# How to use
+## Send a message to the recipient
+
+```
+POST /<stage name>/messages/ HTTP/1.1
+Host: <FQDN of depoyed api>
+Content-Type: application/json
+x-api-key: <API Key>
+
+{
+    "recipient": "<email address>",
+    "message": "<message>"
+}
+```
+## Retrieve the messages sent to a particular recipient
+
+```
+GET /<stage name>/messages/recipient/<URL encoded email address> HTTP/1.1
+Host: <FQDN of depoyed api>
+x-api-key: <API Key>
+```
